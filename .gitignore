@@ -59,3 +59,9 @@ src/cn/
 
 properties.h
 mods*/
+# libultragx GX build (devkitPPC) artifacts
+*.dol
+*.elf
+*.map
+build_gx_wii/
+build_gx_gamecube/

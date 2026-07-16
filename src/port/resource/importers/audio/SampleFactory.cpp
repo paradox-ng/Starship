@@ -2,13 +2,18 @@
 #include "../ResourceUtil.h"
 #include "port/resource/type/audio/Sample.h"
 #include "sf64audio_provisional.h"
+#include <tinyxml2.h>
+// Streamed-audio decoders (custom wav/ogg/mp3 HD samples) are desktop-only: they pull
+// in dr_wav/dr_mp3/vorbis and spawn std::thread workers. The console build uses the
+// native ADPCM samples from the o2r (decoded by the audio engine), so the whole
+// streaming path is gated out below.
+#ifndef GEKKO
 #define DR_WAV_IMPLEMENTATION
 #include <dr_wav.h>
-#include <tinyxml2.h>
 #define DR_MP3_IMPLEMENTATION
 #include <dr_mp3.h>
-
 #include "vorbis/vorbisfile.h"
+#endif
 
 namespace SF64 {
 std::shared_ptr<Ship::IResource> ResourceFactoryBinarySampleV1::ReadResource(std::shared_ptr<Ship::File> file,
@@ -44,6 +49,7 @@ std::shared_ptr<Ship::IResource> ResourceFactoryBinarySampleV1::ReadResource(std
     return sample;
 }
 
+#ifndef GEKKO // desktop-only streamed-audio decoder callbacks + worker threads
 static size_t VorbisReadCallback(void* out, size_t size, size_t elems, void* src) {
     OggFileData* data = static_cast<OggFileData*>(src);
     size_t toRead = size * elems;
@@ -142,6 +148,7 @@ static void OggDecoderWorker(std::shared_ptr<Sample> sample, std::shared_ptr<Shi
     } while (read != 0);
     ov_clear(&vf);
 }
+#endif // !GEKKO
 
 std::shared_ptr<Ship::IResource> ResourceFactoryXMLSampleV0::ReadResource(std::shared_ptr<Ship::File> file,
                                                                            std::shared_ptr<Ship::ResourceInitData> initData) {
@@ -192,6 +199,7 @@ std::shared_ptr<Ship::IResource> ResourceFactoryXMLSampleV0::ReadResource(std::s
 
     const char* path = child->Attribute("Path");
     auto sampleFile = Ship::Context::GetInstance()->GetResourceManager()->GetArchiveManager()->LoadFile(path);
+#ifndef GEKKO
     if (customFormatStr != nullptr) {
         // Compressed files can take a really long time to decode (~250ms per).
         // This worked when we tested it (09/04/2024) (Works on my machine)
@@ -220,6 +228,7 @@ std::shared_ptr<Ship::IResource> ResourceFactoryXMLSampleV0::ReadResource(std::s
             return sample;
         }
     }
+#endif // !GEKKO
     // Not a normal streamed sample. Fallback to the original ADPCM sample to be decoded by the audio engine.
     sample->mSample.sampleAddr = new uint8_t[size];
     // Can't use memcpy due to endianness issues.

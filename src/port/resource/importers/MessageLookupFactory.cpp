@@ -1,4 +1,5 @@
 #include "MessageLookupFactory.h"
+#include <cstring> // strdup
 #include "../type/Message.h"
 #include "spdlog/spdlog.h"
 #include "resourcebridge.h"

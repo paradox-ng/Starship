@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tinyxml2.h> // XMLElement used in the XML factory signatures below
+
 #include "Resource.h"
 #include "ResourceFactoryXML.h"
 #include "ResourceFactoryBinary.h"

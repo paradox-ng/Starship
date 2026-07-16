@@ -2,9 +2,16 @@
 #include "ui/ImguiUI.h"
 #include "StringHelper.h"
 
-#include "extractor/GameExtractor.h"
+#ifndef GEKKO
+#include "extractor/GameExtractor.h" // desktop-only: ROM->o2r asset extraction (Torch/Companion)
+#endif
 #include "libultraship/src/Context.h"
-#include "libultraship/src/controller/controldevice/controller/mapping/ControllerDefaultMappings.h"
+#ifdef GEKKO
+#include "controller/controldeck/ControlDeck.h" // LUS::ControlDeck (console PAD/WPAD deck)
+#include <fast/resource/ResourceType.h>          // Fast::ResourceType for the factory registrations
+#else
+#include "libultraship/src/controller/controldevice/controller/mapping/ControllerDefaultMappings.h" // desktop SDL mapping tables
+#endif
 #include "resource/type/ResourceType.h"
 #include "resource/importers/AnimFactory.h"
 #include "resource/importers/ColPolyFactory.h"
@@ -129,6 +136,12 @@ GameEngine::GameEngine() {
     this->context->InitConsoleVariables(); // without this line the controldeck constructor failes in
                                            // ShipDeviceIndexMappingManager::UpdateControllerNamesFromConfig()
 
+#ifdef GEKKO
+    // Console reads the GameCube pad / Wii remote directly (libultragx's LUS::ControlDeck
+    // maps PAD/WPAD straight to OSContPad); there is no SDL device or keyboard mapping
+    // layer, so the desktop default-mapping tables below don't apply.
+    auto controlDeck = std::make_shared<LUS::ControlDeck>();
+#else
     auto defaultMappings = std::make_shared<Ship::ControllerDefaultMappings>(
         // KeyboardKeyToButtonMappings - use built-in LUS defaults
         std::unordered_map<CONTROLLERBUTTONS_T, std::unordered_set<Ship::KbScancode>>(),
@@ -161,14 +174,26 @@ GameEngine::GameEngine() {
         std::unordered_map<Ship::StickIndex, std::vector<std::pair<Ship::Direction, std::pair<SDL_GameControllerAxis, int32_t>>>>()
     );
     auto controlDeck = std::make_shared<LUS::ControlDeck>(std::vector<CONTROLLERBUTTONS_T>(), defaultMappings);
+#endif
 
     this->context->InitResourceManager(archiveFiles, {}, 3); // without this line InitWindow fails in Gui::Init()
     this->context->InitConsole(); // without this line the GuiWindow constructor fails in ConsoleWindow::InitElement()
 
     auto window = std::make_shared<Fast::Fast3dWindow>(std::vector<std::shared_ptr<Ship::GuiWindow>>({}));
 
+#ifdef GEKKO
+    // libultragx drives startup through the piecemeal Init* subsystems (no combined
+    // Context::Init()/GetConfig() path). InitResourceManager/InitConsole are already
+    // called above; wire the deck, window, audio and event system the way the desktop
+    // combined Init would. Audio channel selection is console-fixed (no Config UI).
+    this->context->InitControlDeck(controlDeck);
+    this->context->InitWindow(window);
+    this->context->InitAudio({ .SampleRate = 32000, .SampleLength = 1024, .DesiredBuffered = 1680 });
+    this->context->InitEventSystem();
+#else
     auto audioChannelsSetting = Ship::Context::GetInstance()->GetConfig()->GetCurrentAudioChannelsSetting();
     this->context->Init(archiveFiles, {}, 3, { 32000, 1024, 1680, audioChannelsSetting }, window, controlDeck);
+#endif
 
 #ifndef __SWITCH__
     Ship::Context::GetInstance()->GetLogger()->set_level(
@@ -266,6 +291,16 @@ GameEngine::GameEngine() {
 }
 
 bool GameEngine::GenAssetFile(bool exitOnFail) {
+#ifdef GEKKO
+    // Console builds cannot extract assets from a ROM (no Torch/Companion, no host
+    // filesystem to write into). The .o2r must be built on a PC and placed on the SD
+    // card next to the game. Fail loudly so a missing archive is obvious.
+    ShowMessage("Missing assets", "starship.o2r was not found.\n\nBuild it on a PC and copy it to the SD card.");
+    if (exitOnFail) {
+        exit(1);
+    }
+    return false;
+#else
     auto extractor = new GameExtractor();
 
     if (!extractor->SelectGameFromUI()) {
@@ -290,6 +325,7 @@ bool GameEngine::GenAssetFile(bool exitOnFail) {
     ShowMessage(("Starship - Extraction - Found " + game.value()).c_str(), "The extraction process will now begin.\n\nThis may take a few minutes.", SDL_MESSAGEBOX_INFORMATION);
 
     return extractor->GenerateOTR();
+#endif
 }
 
 void GameEngine::Create() {

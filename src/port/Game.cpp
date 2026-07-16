@@ -3,6 +3,15 @@
 #include <Fast3D/interpreter.h>
 #include "Engine.h"
 
+// libultragx's GX backend (gfx_gx_api.cpp / gfx_gx_tev.cpp) references these render
+// bisect flags as externs and expects the game to define them (see Ghostship's
+// Game.cpp). Full pipeline, no skips.
+extern "C" {
+int g_gx_skip_draw = 0;
+int g_gx_skip_geom = 0;
+int g_gx_stop_at = 5; // 1=TEV 2=vtxdesc 3=mtx 4=chan 5=full
+}
+
 extern "C" {
 #include <sf64mesg.h>
     void Main_SetVIMode(void);

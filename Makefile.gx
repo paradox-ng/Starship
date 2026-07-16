@@ -1,0 +1,124 @@
+#---------------------------------------------------------------------------------
+# StarShip (Star Fox 64 PC port) -> GameCube/Wii via libultragx (devkitPPC). Compiles
+# the game decomp + port layer together with libultragx (submodule) into one .dol; the
+# game provides main(). Cross-compile scaffold - expect a long error tail on first
+# builds; the ui (ImGui) and extractor (Torch/Companion) layers are excluded/stubbed.
+#   make -f Makefile.gx PLATFORM=wii
+#---------------------------------------------------------------------------------
+.SUFFIXES:
+GXMK_DIR	:=	$(dir $(lastword $(MAKEFILE_LIST)))
+ifeq ($(strip $(DEVKITPPC)),)
+$(error "Set DEVKITPRO/DEVKITPPC (run inside the devkitppc docker image)")
+endif
+
+PLATFORM	?=	wii
+ifeq ($(PLATFORM),wii)
+include $(DEVKITPPC)/wii_rules
+PLATFORM_LIBS	:=	-lwiiuse -lbte
+else
+include $(DEVKITPPC)/gamecube_rules
+PLATFORM_LIBS	:=
+endif
+
+GX		:=	libultragx
+TARGET		:=	starship-$(PLATFORM)
+BUILD		:=	build_gx_$(PLATFORM)
+
+# libultragx sources (everything except its standalone apps) - identical tree to the
+# Ghostship build.
+GX_SRC		:=	$(GX)/source/platform $(GX)/source/ship $(GX)/source/config $(GX)/source/bridge \
+				$(GX)/source/log $(GX)/source/utils/binarytools $(GX)/source/window/gui $(GX)/source/debug \
+				$(GX)/source/gfx $(GX)/source/ship/resource $(GX)/source/ship/resource/archive \
+				$(GX)/source/ship/resource/factory $(GX)/source/ship/resource/type \
+				$(GX)/source/ship/utils $(GX)/source/ship/controller $(GX)/source/ship/events \
+				$(GX)/source/fast $(GX)/source/fast/resource $(GX)/source/fast/debug \
+				$(GX)/extern/prism/src/prism $(GX)/extern/prism/src/prism/utils
+
+# Game decomp + port. Auto-discover all src dirs, excluding: libultra (libultragx
+# replaces the N64 SDK; a few endian-neutral math files are added back via LIB_KEEP as
+# link errors demand), the ImGui ui layer, and the desktop-only extractor (Torch).
+GAME_SRC	:=	$(shell find src -type d \
+				-not -path 'src/libultra*' \
+				-not -path 'src/port/ui*' \
+				-not -path 'src/port/extractor*')
+# Endian-neutral libultra math/util the port still needs (resolved via VPATH from
+# src/libultra). Start empty; add files as undefined-reference link errors point at them.
+LIB_DIR		:=	src/libultra/gu src/libultra/libc src/libultra/vimodes src/libultra/gcc_fix
+# Endian-neutral N64 gu math the game's own gu wrappers call (guMtxF2L/guMtxIdentF in
+# mtxutil.c, guSqrtf in sqrtf.c). guLookAt/guPerspective come from the game's src/engine;
+# guOrtho does not, so ortho.c is pulled back too - defining it here keeps the game's
+# guOrtho callers off libogc's guOrtho, which would otherwise drag in libogc's gu.o (and
+# its guLookAt/guPerspective) and collide with the game's engine definitions.
+LIB_KEEP	:=	mtxutil.c sqrtf.c ortho.c
+
+SOURCES		:=	$(GAME_SRC) $(GX_SRC)
+# StarShip includes libultraship's real paths (<Fast3D/...>, <libultraship/src/...>);
+# gx_compat/ forwards those to libultragx's lean fast/, ship/. libultragx's include dirs
+# are all added so bare umbrella/util includes resolve.
+INCLUDES	:=	gx_stubs gx_compat . include src src/port \
+				$(GX)/source $(GX)/include $(GX)/include/libultraship \
+				$(GX)/extern/prism/src $(GX)/extern/json/single_include \
+				$(shell find $(GX)/include -type d -not -path '*/libultraship/libultra' -not -path '*/libultraship/libultra/*')
+
+include $(GXMK_DIR)cmake/gx-cvars.mk
+# StarShip compile defines, matching its CMakeLists add_compile_definitions minus the
+# desktop/ImGui-only ones. F3DEX_GBI (not F3D_OLD - SF64 uses F3DEX); IS_BIGENDIAN for
+# the big-endian PPC target. LUGX_GAME_OWNS_EVENTS: Starship ships its own event system
+# (src/port/hooks) that reuses libultraship's generic type names (EventID/IEvent/...),
+# so keep libultragx's competing event typedefs out of the game's translation units.
+GAME_DEFS	=	-DGBI_FLOATS=1 -DF3DEX_GBI=1 -DVERSION_US=1 -DENABLE_RUMBLE=1 \
+				-D_LANGUAGE_C -D_USE_MATH_DEFINES -DNON_MATCHING=1 -DNON_EQUIVALENT=1 \
+				-DAVOID_UB=1 -DTARGET_PORT -DIS_BIGENDIAN -DLUGX_GAME_OWNS_EVENTS
+
+CFLAGS		=	-g -O2 -fno-strict-aliasing -Wall -Wno-incompatible-pointer-types -Wno-int-conversion \
+				-Wno-builtin-macro-redefined $(CVAR_DEFS) $(GAME_DEFS) $(MACHDEP) $(INCLUDE)
+CXXFLAGS	=	$(CFLAGS) -std=gnu++20
+LDFLAGS		=	-g $(MACHDEP) -Wl,-Map,$(notdir $@).map
+LIBS		:=	$(PLATFORM_LIBS) -lasnd -lfat -lz -logc -lm
+LIBDIRS		:=	$(PORTLIBS_PATH)/ppc
+
+#---------------------------------------------------------------------------------
+ifneq ($(BUILD),$(notdir $(CURDIR)))
+export OUTPUT	:=	$(CURDIR)/$(TARGET)
+export VPATH	:=	$(foreach dir,$(SOURCES) $(LIB_DIR),$(CURDIR)/$(dir))
+export DEPSDIR	:=	$(CURDIR)/$(BUILD)
+
+# main.c = N64 entry (port drives its own loop); sys_fault = N64 RCP fault handler;
+# sys_timer.c = N64 timer-task system, replaced by the port's Timer_* in Engine.cpp
+# (the desktop CMakeLists excludes it too).
+# bosskiller.c = debug mod referenced only under #if DEBUG_BOSS_KILLER (off), and it
+# uses build-specific Player fields that don't exist here.
+# The rest are include-style mod .c files (#include'd into an engine/menu TU, like
+# .inc.c); compiling them standalone both duplicates their symbols and drops the macro
+# context their includer sets up first.
+C_EXCLUDE	:=	main.c sys_fault.c sys_timer.c bosskiller.c \
+				fpscounter.c hit64.c levelselect.c object_ram.c sfxjukebox.c sfxjukebox2.c spawner.c \
+				fox_colheaders.c fox_edata_info.c fox_end2_data.c fox_load_inits.c fox_rcp_setup.c
+ALL_C		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+CFILES		:=	$(filter-out $(C_EXCLUDE) %.inc.c,$(ALL_C)) $(LIB_KEEP)
+# notification.cpp = ImGui on-screen notification overlay; libultragx has no ImGui and
+# nothing else references Notification::, so drop it from the console build.
+CPP_EXCLUDE	:=	notification.cpp
+ALL_CPP		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
+CPPFILES	:=	$(filter-out $(CPP_EXCLUDE),$(ALL_CPP))
+sFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
+SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.S)))
+
+export LD	:=	$(CXX)
+export OFILES	:=	$(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(sFILES:.s=.o) $(SFILES:.S=.o)
+export INCLUDE	:=	$(foreach dir,$(INCLUDES),-iquote $(CURDIR)/$(dir) -I$(CURDIR)/$(dir)) \
+					$(foreach dir,$(LIBDIRS),-I$(dir)/include) -I$(CURDIR)/$(BUILD) -I$(LIBOGC_INC)
+export LIBPATHS	:=	-L$(LIBOGC_LIB) $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
+
+.PHONY: $(BUILD) clean
+$(BUILD):
+	@[ -d $@ ] || mkdir -p $@
+	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile.gx
+clean:
+	@rm -fr build_gx_wii build_gx_gamecube starship-*.elf starship-*.dol
+else
+DEPENDS	:=	$(OFILES:.o=.d)
+$(OUTPUT).dol: $(OUTPUT).elf
+$(OUTPUT).elf: $(OFILES)
+-include $(DEPENDS)
+endif

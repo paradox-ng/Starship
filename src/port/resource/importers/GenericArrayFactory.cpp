@@ -1,4 +1,5 @@
 #include "GenericArrayFactory.h"
+#include <algorithm> // std::copy_n
 #include "../type/GenericArray.h"
 #include "spdlog/spdlog.h"
 
