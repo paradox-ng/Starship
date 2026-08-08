@@ -24,6 +24,17 @@ typedef void (*AudioCustomUpdateFunction)(void);
 #define AUDIO_MK_CMD(b0, b1, b2, b3) \
     ((((b0) &0xFF) << 0x18) | (((b1) &0xFF) << 0x10) | (((b2) &0xFF) << 0x8) | (((b3) &0xFF) << 0))
 
+// Read a 16-bit field out of raw, unconverted N64 audio data (gSeqFontTable and
+// friends, which are stored big-endian exactly as the ROM had them). Only a
+// little-endian host needs the swap; doing it unconditionally on a big-endian host
+// turns a valid table offset such as 0x0084 into 0x8400, which indexes far out of
+// bounds and yields a font count of zero, so no soundfont is ever loaded.
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+#define AUDIO_RAW16(x) (x)
+#else
+#define AUDIO_RAW16(x) BSWAP16(x)
+#endif
+
 #define NO_LAYER ((SequenceLayer*) (-1))
 
 // Also known as "Pulses Per Quarter Note" or "Tatums Per Beat"
@@ -779,12 +790,26 @@ typedef struct {
 typedef struct {
     /* 0x0 */ union {
         u32 opArgs;
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+        // AUDIO_MK_CMD packs op into the MOST significant byte of opArgs, so the byte
+        // fields must be declared most-significant-first on a big-endian host. With the
+        // little-endian order below, op and arg2 (and arg0/arg1) swap places, every
+        // queued command decodes as a different opcode, and nothing the game asks for -
+        // including INIT_SEQPLAYER - is ever recognised, leaving the game silent.
+        struct {
+            u8 op;
+            u8 arg0;
+            u8 arg1;
+            u8 arg2;
+        };
+#else
         struct {
             u8 arg2;
             u8 arg1;
             u8 arg0;
             u8 op;
         };
+#endif
     };
     union {
         uintptr_t asPtr;

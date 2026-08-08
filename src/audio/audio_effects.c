@@ -174,6 +174,9 @@ void Audio_NoteVibratoInit(Note* note) {
     noteState->portamento = noteState->parentLayer->portamento;
 }
 
+// NOTE: these envelope reads DO need the swap even on big-endian - reasoning said
+// otherwise, but removing it measurably killed the music (instrument envelopes) while
+// leaving voices audible, and dropped the overall level by 12dB. Leave BSWAP16 here.
 void Audio_AdsrInit(AdsrState* adsr, EnvelopePoint* envelope, s16* arg2) {
     adsr->action.asByte = 0;
     adsr->state = 0;

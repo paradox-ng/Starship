@@ -36,10 +36,15 @@ std::shared_ptr<Ship::IResource> ResourceFactoryBinarySampleV1::ReadResource(std
 
     if(sample->mSample.codec == 2){
         sample->mSample.medium = 2;
+#if !defined(__BYTE_ORDER__) || (__BYTE_ORDER__ != __ORDER_BIG_ENDIAN__)
+        // 16-bit PCM samples are stored in the archive in the ROM's big-endian order,
+        // so only a little-endian host needs the swap. Doing it on a big-endian host
+        // turns every sample into noise.
         for(size_t i = 0; i < sample->mSample.size / 2; i++){
             auto sampleData = (int16_t*) sample->mSample.sampleAddr;
             sampleData[i] = BSWAP16(sampleData[i]);
         }
+#endif
     } else {
         sample->mSample.medium = 0;
     }

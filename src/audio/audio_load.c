@@ -399,7 +399,7 @@ void AudioLoad_SyncInitSeqPlayerInternal(s32 playerIdx, s32 seqId, s32 arg2) {
 
     AudioSeq_SequencePlayerDisable(&gSeqPlayers[playerIdx]);
 
-    index = BSWAP16(*((u16*) gSeqFontTable + seqId));
+    index = AUDIO_RAW16(*((u16*) gSeqFontTable + seqId));
     numFonts = gSeqFontTable[index++];
     fontId = 0xFF;
 

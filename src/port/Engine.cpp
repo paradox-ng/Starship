@@ -49,6 +49,9 @@
 #include "port/mods/PortEnhancements.h"
 
 #include <Fast3D/interpreter.h>
+#ifdef GEKKO
+#include "platform/lugx_config.h" // console frame-interpolation setting
+#endif
 #include <filesystem>
 
 #ifdef __SWITCH__
@@ -188,6 +191,12 @@ GameEngine::GameEngine() {
     // combined Init would. Audio channel selection is console-fixed (no Config UI).
     this->context->InitControlDeck(controlDeck);
     this->context->InitWindow(window);
+    // Star Fox 64 is a 30fps game (sys_main.c sets gVIsPerFrame = 2, i.e. one frame per
+    // two video fields) and its logic is paced by the present, so pin the target here.
+    // The GX window backend defaults to 60; left at that, the present never caps, the
+    // whole game runs above its native rate at whatever the scene allows, and the
+    // framerate swings instead of holding steady.
+    window->SetTargetFps(30);
     this->context->InitAudio({ .SampleRate = 32000, .SampleLength = 1024, .DesiredBuffered = 1680 });
     this->context->InitEventSystem();
 #else
@@ -384,6 +393,9 @@ void GameEngine::StartFrame() const {
 #endif
 
 #define MAX_NUM_AUDIO_CHANNELS 6
+// Ceiling on audio updates generated in one frame when topping up the output
+// buffer; also sizes the staging buffer and bounds the worst-case submission.
+#define MAX_AUDIO_UPDATES_PER_FRAME 10
 
 extern "C" u16 audBuffer = 0;
 #include <sf64audio_provisional.h>
@@ -450,30 +462,63 @@ void GameEngine::HandleAudioThread() {
 }
 
 void GameEngine::StartAudioFrame() {
+#ifdef GEKKO
+    // Console audio is generated inline. The desktop arrangement hands the work to a
+    // worker thread and waits on a condition variable in EndAudioFrame, which deadlocks
+    // under libogc's cooperative scheduler: nothing forces the audio thread to be
+    // scheduled while the main thread is blocked waiting for it.
+    //
+    // Otherwise this mirrors the worker exactly - gVIsPerFrame updates per frame, of
+    // samples_high or samples_low depending on how full the output buffer is. That
+    // fixed cadence is load-bearing: the sequence player and the ADSR envelopes advance
+    // once per update, so generating a VARIABLE number of updates per frame makes the
+    // music and every note envelope run at a varying rate, heard as sounds fading in
+    // and out and crackling. It relies on the frame rate holding the game's native 30
+    // (see GetInterpolationFPS), which is what makes one frame's worth of audio match
+    // one frame of wall time.
+    const int32_t numAudioChannels = GetNumAudioChannels();
+    const int32_t samplesLeft = AudioPlayerBuffered();
+    const u32 numAudioSamples = samplesLeft < AudioPlayerGetDesiredBuffered() ? samples_high : samples_low;
+    const int32_t updates = gVIsPerFrame > 0 ? (int32_t) gVIsPerFrame : 1;
+
+    // Static, not automatic: this is tens of kilobytes, too much for a stack.
+    static s16 audioBuffer[SAMPLES_HIGH * MAX_NUM_AUDIO_CHANNELS * MAX_AUDIO_UPDATES_PER_FRAME];
+    for (int32_t i = 0; i < updates; i++) {
+        AudioThread_CreateNextAudioBuffer(audioBuffer + i * (numAudioSamples * numAudioChannels), numAudioSamples);
+    }
+    AudioPlayerPlayFrame((u8*) audioBuffer,
+                         numAudioSamples * (sizeof(int16_t) * numAudioChannels * updates));
+#else
     {
         std::unique_lock<std::mutex> Lock(audio.mutex);
         audio.processing = true;
     }
     audio.cv_to_thread.notify_one();
+#endif
 }
 
 void GameEngine::EndAudioFrame() {
+#ifndef GEKKO
     {
         std::unique_lock<std::mutex> Lock(audio.mutex);
         while (audio.processing) {
             audio.cv_from_thread.wait(Lock);
         }
     }
+#endif
 }
 
 void GameEngine::AudioInit() {
+#ifndef GEKKO
     if (!audio.running) {
         audio.running = true;
         audio.thread = std::thread(HandleAudioThread);
     }
+#endif
 }
 
 void GameEngine::AudioExit() {
+#ifndef GEKKO
     {
         std::unique_lock lock(audio.mutex);
         audio.running = false;
@@ -481,6 +526,7 @@ void GameEngine::AudioExit() {
     audio.cv_to_thread.notify_all();
     // Wait until the audio thread quit
     audio.thread.join();
+#endif
 }
 
 void GameEngine::RunCommands(Gfx* Commands, const std::vector<std::unordered_map<Mtx*, MtxF>>& mtx_replacements) {
@@ -570,6 +616,18 @@ void GameEngine::ProcessGfxCommands(Gfx* commands) {
 }
 
 uint32_t GameEngine::GetInterpolationFPS() {
+#ifdef GEKKO
+    // Console: frame interpolation is opt-in through libultragx's config.ini
+    // (frame_interpolation), not through the desktop CVars, which have no UI here and
+    // default to 60. Left on those defaults this returns 60 for a 30fps game, so
+    // RunCommands synthesises an in-between frame for every real one and overwrites the
+    // window's target rate every frame - the renderer then chases 60 it cannot hold and
+    // the framerate swings. Report the game's native rate instead: 60 / gVIsPerFrame.
+    {
+        const uint32_t nativeFps = gVIsPerFrame > 0 ? (60u / (uint32_t) gVIsPerFrame) : 30u;
+        return g_lugx_config.frame_interpolation ? 60u : nativeFps;
+    }
+#else
     if (CVarGetInteger("gMatchRefreshRate", 0)) {
         return Ship::Context::GetInstance()->GetWindow()->GetCurrentRefreshRate();
 
@@ -580,6 +638,7 @@ uint32_t GameEngine::GetInterpolationFPS() {
     }
 
     return CVarGetInteger("gInterpolationFPS", 60);
+#endif
 }
 
 uint32_t GameEngine::GetInterpolationFrameCount()
